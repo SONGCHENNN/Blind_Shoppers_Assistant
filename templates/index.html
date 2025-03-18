@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Video</title>
+    <style>
+        /* Hide the upload form and button */
+        #upload-section {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="upload-section">
+    <h1>Upload Video</h1>
+    <form action="/upload_video" method="POST" enctype="multipart/form-data">
+        <input type="file" name="video" accept="video/mp4" required>
+        <button type="submit">Upload</button>
+    </form>
+    </div>
+
+    <h2>Latest Video</h2>
+    <video width="640" height="480" controls>
+        <source src="{{ url_for('static', filename='uploads/latest_video_fixed.mp4') }}" type="video/mp4">
+        Your browser does not support the video tag.
+    </video>
+    <br>
+    <!-- Download button -->
+    <h3>Click below to download the converted video:</h3>
+    <a href="/video" download="converted_video.mp4">
+        <button>Download Video</button>
+    </a>
+    <br>
+     <h2>Send Email Notification</h2>
+    <form action="/send_email" method="POST">
+        <label for="email">Recipient Email:</label>
+        <input type="email" id="email" name="email" required>
+        <button type="submit">Send Email</button>
+    </form>
+</body>
+</html>
