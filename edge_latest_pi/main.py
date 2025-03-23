@@ -1,0 +1,282 @@
+import speech_recognition as sr
+import time
+import os
+import cv2
+import requests
+import threading
+import paho.mqtt.client as mqtt
+import accelerometer_new as accelerometer
+import ultrasonic
+import yolo_detect
+
+# Flask server URL
+flask_server_url = "http://<laptop_ip>:5000/upload_video"
+
+# Video filename
+mp4_filename = "/home/qunzhen/video.mp4"
+
+# Initialize the camera
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FPS, 24)
+
+# Initialize the Recognizer class for speech recognition
+r = sr.Recognizer()
+
+# State variables
+is_recording = False
+video_writer = None
+accelerometer_thread = None
+ultrasonic_thread = None
+stop_accel = False
+stop_ultrasonic = False
+yolo_detector = None
+
+
+def start_recording():
+    global is_recording, video_writer, accelerometer_thread, ultrasonic_thread, stop_accel, stop_ultrasonic, yolo_detector
+    print("Recording video...")
+    is_recording = True
+
+    # Initialize video writer
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # Try mp4v instead of H264
+    video_writer = cv2.VideoWriter(mp4_filename, fourcc, 24, (640, 480))
+    if not video_writer.isOpened():
+        print("Error: VideoWriter failed to open")
+        is_recording = False
+        return
+
+    # Initialize YOLO detector if not already done
+    if yolo_detector is None:
+        yolo_detector = yolo_detect.YOLODetector(model_path="/home/qunzhen/try/models/best.pt")
+
+    # Start YOLO detection
+    # Change to True if you want to see the camera interface
+    yolo_detector.start_detection(cap, display=True)
+    print("YOLO detection started.")
+
+    # Start accelerometer in a separate thread
+    stop_accel = False
+    accelerometer_thread = threading.Thread(
+        target=run_accelerometer_wrapper,
+        daemon=True
+    )
+    accelerometer_thread.start()
+    print("Accelerometer started.")
+
+    # Start ultrasonic sensor in a separate thread
+    stop_ultrasonic = False
+    ultrasonic_thread = threading.Thread(
+        target=run_ultrasonic_sensor,
+        daemon=True
+    )
+    ultrasonic_thread.start()
+    print("Ultrasonic sensor started.")
+
+    # Record video with YOLO annotations
+    recording_thread = threading.Thread(target=record_video_loop, daemon=True)
+    recording_thread.start()
+
+
+def record_video_loop():
+    global is_recording, video_writer, yolo_detector
+
+    while is_recording:
+        if not video_writer.isOpened():
+            print("VideoWriter not open during recording loop")
+            break
+
+        # Get the latest annotated frame from YOLO detector
+        frame = yolo_detector.get_latest_frame()
+        if frame is not None:
+            video_writer.write(frame)
+        else:
+            # Fallback to direct camera capture if YOLO hasn't processed a frame yet
+            ret, frame = cap.read()
+            if ret:
+                video_writer.write(frame)
+            else:
+                print("Failed to grab frame")
+                time.sleep(0.01)  # Small delay to prevent CPU hogging
+
+        time.sleep(0.01)  # Small delay to prevent CPU hogging
+
+
+# Function to run ultrasonic sensor and publish distance data
+def run_ultrasonic_sensor():
+    global stop_ultrasonic
+    ultrasonic_topic = "sensor/ultrasonic/distance"
+
+    print("Ultrasonic sensor monitoring started")
+    try:
+        while not stop_ultrasonic:
+            # Get distance from ultrasonic module
+            distance = ultrasonic.detect_obstacle()
+            print(f"Distance: {distance} cm")
+
+            # Publish to MQTT
+            mqtt_client.publish(ultrasonic_topic, str(distance))
+
+            # Check if obstacle is too close and play warning
+            if distance < 30:  # Threshold in cm
+                ultrasonic.speak_obstacle_warning()
+
+            time.sleep(1)  # Delay between measurements
+    except Exception as e:
+        print(f"Error in ultrasonic thread: {e}")
+    finally:
+        print("Ultrasonic sensor monitoring stopped")
+
+
+# Wrapper function to run accelerometer with stop check
+def run_accelerometer_wrapper():
+    # Make sure logs directory exists
+    os.makedirs(os.path.expanduser("~/logs"), exist_ok=True)
+
+    # Start the actual accelerometer function
+    try:
+        # We can't directly modify the accelerometer's main loop,
+        # so we'll run it in a separate thread that we can terminate
+        accel_exec_thread = threading.Thread(
+            target=lambda: accelerometer.run_accelerometer(verbose=False),
+            daemon=True
+        )
+        accel_exec_thread.start()
+
+        # Check the stop flag periodically
+        while not stop_accel:
+            time.sleep(0.5)  # Check every half second
+
+        print("Accelerometer stopping...")
+        # Thread will be automatically terminated since it's a daemon thread
+
+    except Exception as e:
+        print(f"Error in accelerometer wrapper: {e}")
+
+
+def stop_recording():
+    global is_recording, stop_accel, stop_ultrasonic, yolo_detector, video_writer
+    if is_recording:
+        print("Recording stopped.")
+        is_recording = False
+
+        # Stop YOLO detection
+        if yolo_detector is not None:
+            yolo_detector.stop_detection()
+            print("YOLO detection stopped.")
+
+        # Signal the accelerometer to stop
+        stop_accel = True
+        print("Stopping accelerometer...")
+
+        # Signal the ultrasonic sensor to stop
+        stop_ultrasonic = True
+        print("Stopping ultrasonic sensor...")
+
+        # Make sure to release the video writer properly
+        if video_writer is not None and video_writer.isOpened():
+            video_writer.release()
+            print("Video writer released.")
+
+        # Wait for file to be completely written
+        time.sleep(2)  # Give more time for file operations to complete
+
+        # Send the MP4 file to Flask
+        send_video_to_flask()
+
+
+def send_video_to_flask():
+    # Check if file exists and has content
+    if not os.path.exists(mp4_filename) or os.path.getsize(mp4_filename) == 0:
+        print(f"Error: Video file {mp4_filename} doesn't exist or is empty")
+        return
+
+    print(f"Sending video file (size: {os.path.getsize(mp4_filename)} bytes)")
+
+    try:
+        with open(mp4_filename, "rb") as video_file:
+            files = {"video": video_file}
+            response = requests.post(flask_server_url, files=files)
+            if response.status_code == 200:
+                print("Video successfully sent.")
+            else:
+                print(f"Error sending video: {response.status_code}, {response.text}")
+    except Exception as e:
+        print(f"Failed to send video: {e}")
+
+
+# Listen for speech commands (start/stop)
+def listen_for_commands():
+    global is_recording
+    with sr.Microphone() as source:
+        r.adjust_for_ambient_noise(source)
+        print("Say 'start' to begin recording or 'stop' to end.")
+
+        while True:
+            audio = r.listen(source)
+            try:
+                command = r.recognize_google(audio).lower()
+                print(f"You said: {command}")
+
+                if "start" in command and not is_recording:
+                    print("Starting recording...")
+                    start_recording_thread = threading.Thread(target=start_recording)
+                    start_recording_thread.start()
+                elif "stop" in command and is_recording:
+                    print("Stopping recording...")
+                    stop_recording()
+                    break
+                else:
+                    print("Unrecognized command. Please say 'start' to begin recording or 'stop' to end recording.")
+            except sr.UnknownValueError:
+                print("Google Speech Recognition could not understand audio")
+            except sr.RequestError as e:
+                print(f"Could not request results from Google Speech Recognition service; {e}")
+
+
+# MQTT Callback function for receiving fall alerts
+def on_message(client, userdata, message):
+    payload = message.payload.decode("utf-8")
+    if payload == "Fall detected!":
+        print("Fall detected! Stopping video recording...")
+        stop_recording()
+
+
+# MQTT setup to listen for fall detection alerts
+mqtt_broker = "<raspberry_pi_ip>"  # Changed from empty string
+mqtt_port = 1883
+mqtt_topic = "fall_detection_alert"
+mqtt_client = mqtt.Client()
+try:
+    mqtt_client.connect("<pi_ip>", mqtt_port, 60)
+    mqtt_client.subscribe(mqtt_topic)
+    mqtt_client.on_message = on_message
+except Exception as e:
+    print(f"Failed to connect to MQTT broker: {e}")
+
+# Start listening for commands
+command_thread = threading.Thread(target=listen_for_commands)
+command_thread.start()
+
+# Start MQTT loop in a separate thread
+try:
+    mqtt_thread = threading.Thread(target=mqtt_client.loop_forever)
+    mqtt_thread.daemon = True  # Make it a daemon thread
+    mqtt_thread.start()
+except Exception as e:
+    print(f"Failed to start MQTT thread: {e}")
+
+# Cleanup on exit
+try:
+    command_thread.join()
+    # Don't join the MQTT thread as it's a daemon thread and will be terminated when the program exits
+except KeyboardInterrupt:
+    print("Program interrupted by user")
+    if is_recording:
+        stop_recording()
+finally:
+    # Final cleanup
+    if cap.isOpened():
+        cap.release()
+    cv2.destroyAllWindows()
