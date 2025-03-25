@@ -7,7 +7,12 @@ import threading
 import paho.mqtt.client as mqtt
 import accelerometer_new as accelerometer
 import ultrasonic
-import yolo_detect
+import yolo_detect_new as yolo_detect
+import queue
+
+from gtts import gTTS
+from pydub import AudioSegment
+from pydub.playback import play
 
 # Flask server URL
 flask_server_url = "http://<laptop_ip>:5000/upload_video"
@@ -33,9 +38,77 @@ stop_accel = False
 stop_ultrasonic = False
 yolo_detector = None
 
+# Create a priority queue for audio messages
+# Priority levels: 1 = highest priority, 5 = lowest priority
+audio_queue = queue.PriorityQueue()
+audio_thread = None
+stop_audio_thread = False
+last_announced_objects = set()  # Keep track of previously announced objects
+announcement_cooldown = 5  # Seconds between announcing the same object again
+
+# MQTT topic
+mqtt_topic = "fall_detection/status"
+
+
+# MQTT message handler
+def on_message(client, userdata, message):
+    if message.topic == mqtt_topic:
+        msg = message.payload.decode()
+        if "FALL DETECTED" in msg:
+            add_to_audio_queue("Someone fell down please go to help them", priority=1)
+
+
+def add_to_audio_queue(text, priority=3):
+    """Add text to be spoken to the queue with priority (1=highest, 5=lowest)"""
+    # Use current timestamp as secondary sort key to maintain FIFO order within same priority
+    audio_queue.put((priority, time.time(), text))
+    print(f"Added to audio queue (priority {priority}): {text}")
+
+
+def process_audio_queue():
+    """Process and speak items in the audio queue"""
+    global stop_audio_thread
+
+    print("Audio queue processor started")
+    while not stop_audio_thread:
+        try:
+            # Try to get an item from the queue, but don't block indefinitely
+            try:
+                priority, _, text = audio_queue.get(block=True, timeout=1.0)
+
+                # Speak the text using ultrasonic module's speak function
+                print(f"Speaking (priority {priority}): {text}")
+                speak_text(text)
+
+                # Mark the task as done
+                audio_queue.task_done()
+
+                # Small delay after speaking
+                time.sleep(0.5)
+            except queue.Empty:
+                # Queue is empty, continue checking
+                pass
+        except Exception as e:
+            print(f"Error in audio queue processor: {e}")
+
+    print("Audio queue processor stopped")
+
+
+def speak_text(text):
+    # Convert text to speech
+    tts = gTTS(text=text, lang='en')
+    # Save the audio to a temporary file
+    tts.save("/tmp/speech_output.mp3")
+
+    # Load the mp3 file with pydub
+    sound = AudioSegment.from_mp3("/tmp/speech_output.mp3")
+
+    # Play the sound
+    play(sound)
+
 
 def start_recording():
-    global is_recording, video_writer, accelerometer_thread, ultrasonic_thread, stop_accel, stop_ultrasonic, yolo_detector
+    global is_recording, video_writer, accelerometer_thread, ultrasonic_thread, stop_accel, stop_ultrasonic, yolo_detector, audio_thread, stop_audio_thread
     print("Recording video...")
     is_recording = True
 
@@ -51,10 +124,25 @@ def start_recording():
     if yolo_detector is None:
         yolo_detector = yolo_detect.YOLODetector(model_path="/home/qunzhen/try/models/best.pt")
 
+    # Start audio queue processor if not already running
+    if audio_thread is None or not audio_thread.is_alive():
+        stop_audio_thread = False
+        audio_thread = threading.Thread(target=process_audio_queue, daemon=True)
+        audio_thread.start()
+        print("Audio queue processor started.")
+
+    # Add initial announcement to queue
+    add_to_audio_queue("Starting recording and object detection", priority=2)
+
     # Start YOLO detection
     # Change to True if you want to see the camera interface
     yolo_detector.start_detection(cap, display=True)
     print("YOLO detection started.")
+
+    # Start a thread to monitor YOLO detections and announce them
+    yolo_announce_thread = threading.Thread(target=announce_yolo_detections, daemon=True)
+    yolo_announce_thread.start()
+    print("YOLO announcements started.")
 
     # Start accelerometer in a separate thread
     stop_accel = False
@@ -77,6 +165,44 @@ def start_recording():
     # Record video with YOLO annotations
     recording_thread = threading.Thread(target=record_video_loop, daemon=True)
     recording_thread.start()
+
+
+def announce_yolo_detections():
+    """Thread function to announce YOLO detections"""
+    global is_recording, yolo_detector
+
+    last_announced_classes = {}  # Track last announced object classes
+
+    while is_recording:
+        if yolo_detector is None:
+            time.sleep(1)
+            continue
+
+        # Get current detections
+        current_detections = yolo_detector.get_latest_detections()
+        if current_detections:
+            current_time = time.time()
+
+            # Process each detection
+            for obj_class, count in current_detections.items():
+                # Check if this is a new object class or if the last announcement was more than cooldown ago
+                if (obj_class not in last_announced_classes or
+                        (current_time - last_announced_classes[obj_class]['time'] > announcement_cooldown)):
+                    if count == 1:
+                        message = f"Detected 1 {obj_class}"
+                    else:
+                        message = f"Detected {count} {obj_class}s"
+
+                    # Add to audio queue with priority
+                    add_to_audio_queue(message, priority=3)
+
+                    # Update last announced info
+                    last_announced_classes[obj_class] = {
+                        'time': current_time,
+                        'count': count
+                    }
+
+        time.sleep(1)  # Check for new detections every second
 
 
 def record_video_loop():
@@ -118,9 +244,10 @@ def run_ultrasonic_sensor():
             # Publish to MQTT
             mqtt_client.publish(ultrasonic_topic, str(distance))
 
-            # Check if obstacle is too close and play warning
+            # Check if obstacle is too close and queue warning
             if distance < 30:  # Threshold in cm
-                ultrasonic.speak_obstacle_warning()
+                # Use priority 1 (highest) for obstacle warnings
+                add_to_audio_queue(f"Obstacle detected ahead! {distance} centimeters away", priority=1)
 
             time.sleep(1)  # Delay between measurements
     except Exception as e:
@@ -156,10 +283,13 @@ def run_accelerometer_wrapper():
 
 
 def stop_recording():
-    global is_recording, stop_accel, stop_ultrasonic, yolo_detector, video_writer
+    global is_recording, stop_accel, stop_ultrasonic, yolo_detector, video_writer, stop_audio_thread
     if is_recording:
         print("Recording stopped.")
         is_recording = False
+
+        # Add stop announcement to queue with priority 2
+        add_to_audio_queue("Stopping recording", priority=2)
 
         # Stop YOLO detection
         if yolo_detector is not None:
@@ -185,14 +315,22 @@ def stop_recording():
         # Send the MP4 file to Flask
         send_video_to_flask()
 
+        # Give some time for final announcements
+        time.sleep(3)
+
+        # Signal the audio thread to stop
+        stop_audio_thread = True
+
 
 def send_video_to_flask():
     # Check if file exists and has content
     if not os.path.exists(mp4_filename) or os.path.getsize(mp4_filename) == 0:
         print(f"Error: Video file {mp4_filename} doesn't exist or is empty")
+        add_to_audio_queue("Error: Video file is empty or doesn't exist", priority=1)
         return
 
     print(f"Sending video file (size: {os.path.getsize(mp4_filename)} bytes)")
+    add_to_audio_queue("Sending video file to server", priority=2)
 
     try:
         with open(mp4_filename, "rb") as video_file:
@@ -200,15 +338,19 @@ def send_video_to_flask():
             response = requests.post(flask_server_url, files=files)
             if response.status_code == 200:
                 print("Video successfully sent.")
+                add_to_audio_queue("Video successfully sent to server", priority=2)
             else:
                 print(f"Error sending video: {response.status_code}, {response.text}")
+                add_to_audio_queue("Error sending video to server", priority=1)
     except Exception as e:
         print(f"Failed to send video: {e}")
+        add_to_audio_queue("Failed to send video to server", priority=1)
 
 
 # Listen for speech commands (start/stop)
 def listen_for_commands():
     global is_recording
+
     with sr.Microphone() as source:
         r.adjust_for_ambient_noise(source)
         print("Say 'start' to begin recording or 'stop' to end.")
@@ -223,33 +365,27 @@ def listen_for_commands():
                     print("Starting recording...")
                     start_recording_thread = threading.Thread(target=start_recording)
                     start_recording_thread.start()
+                elif "start" not in command and not is_recording:
+                    speak_text("Unrecognized command. Please say 'start' to begin recording.")
                 elif "stop" in command and is_recording:
                     print("Stopping recording...")
                     stop_recording()
                     break
                 else:
                     print("Unrecognized command. Please say 'start' to begin recording or 'stop' to end recording.")
+
             except sr.UnknownValueError:
                 print("Google Speech Recognition could not understand audio")
             except sr.RequestError as e:
                 print(f"Could not request results from Google Speech Recognition service; {e}")
 
 
-# MQTT Callback function for receiving fall alerts
-def on_message(client, userdata, message):
-    payload = message.payload.decode("utf-8")
-    if payload == "Fall detected!":
-        print("Fall detected! Stopping video recording...")
-        stop_recording()
-
-
 # MQTT setup to listen for fall detection alerts
-mqtt_broker = "<raspberry_pi_ip>"  # Changed from empty string
+mqtt_broker = ""  # Changed from empty string
 mqtt_port = 1883
-mqtt_topic = "fall_detection_alert"
 mqtt_client = mqtt.Client()
 try:
-    mqtt_client.connect("<pi_ip>", mqtt_port, 60)
+    mqtt_client.connect("", mqtt_port, 60)
     mqtt_client.subscribe(mqtt_topic)
     mqtt_client.on_message = on_message
 except Exception as e:
@@ -258,7 +394,7 @@ except Exception as e:
 # Start listening for commands
 command_thread = threading.Thread(target=listen_for_commands)
 command_thread.start()
-
+speak_text("Welcome to Blind Shopper Assistance. Say 'start' to begin recording.")
 # Start MQTT loop in a separate thread
 try:
     mqtt_thread = threading.Thread(target=mqtt_client.loop_forever)

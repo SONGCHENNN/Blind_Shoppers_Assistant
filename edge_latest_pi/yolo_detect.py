@@ -2,6 +2,7 @@ import cv2
 from ultralytics import YOLO
 import threading
 import time
+from collections import Counter
 
 
 class YOLODetector:
@@ -17,16 +18,27 @@ class YOLODetector:
         self.current_frame = None
         self.annotated_frame = None
 
+        # For tracking detected objects
+        self.latest_detections = {}
+        self.class_names = None  # Will be populated during first detection
+
     def process_frame(self, frame):
         """Process a single frame with the YOLO model and return the annotated frame"""
         if frame is None:
-            return None
+            return None, []
 
         # Perform object detection
         results = self.model.predict(frame, conf=self.conf_threshold)
 
         # Store the raw results for potential further processing
         self.latest_results = results
+
+        # Get class names from the model if not already retrieved
+        if self.class_names is None and hasattr(results[0], 'names'):
+            self.class_names = results[0].names
+
+        # Count detections by class
+        detection_counts = Counter()
 
         # Filter out tiny detections
         filtered_boxes = []
@@ -35,9 +47,17 @@ class YOLODetector:
             area = (x2 - x1) * (y2 - y1)
 
             if area >= self.min_area:
-                filtered_boxes.append((int(x1), int(y1), int(x2), int(y2), box.conf[0], int(box.cls[0])))
+                class_id = int(box.cls[0])
+                class_name = self.class_names[class_id] if self.class_names else f"class_{class_id}"
+
+                filtered_boxes.append((int(x1), int(y1), int(x2), int(y2), box.conf[0], class_id))
+                detection_counts[class_name] += 1
+
                 # Draw this box on the frame
                 cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
+
+        # Update latest detections with the count of each class
+        self.latest_detections = dict(detection_counts)
 
         # Get the annotated frame from YOLO
         annotated_frame = results[0].plot()
@@ -82,12 +102,16 @@ class YOLODetector:
                 # Debug information about detections
                 if detections:
                     print(f"Detected {len(detections)} objects")
+                    print(f"Classes detected: {self.latest_detections}")
 
                 # Display the result if requested
                 if display and self.annotated_frame is not None:
                     cv2.imshow('YOLOv8 Detection', self.annotated_frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
+
+                # Small sleep to avoid maxing out CPU
+                time.sleep(0.01)
 
         except Exception as e:
             print(f"Error in YOLO detection thread: {e}")
@@ -100,6 +124,10 @@ class YOLODetector:
     def get_latest_frame(self):
         """Get the latest annotated frame"""
         return self.annotated_frame if self.annotated_frame is not None else self.current_frame
+
+    def get_latest_detections(self):
+        """Get the latest detected objects with their counts"""
+        return self.latest_detections
 
 
 # For standalone testing
@@ -119,9 +147,12 @@ if __name__ == "__main__":
     detector.start_detection(cap, display=True)
 
     try:
-        # Keep the main thread running
+        # Keep the main thread running and print detections
         while detector.is_running:
-            time.sleep(0.1)
+            detections = detector.get_latest_detections()
+            if detections:
+                print(f"Current detections: {detections}")
+            time.sleep(1)
     except KeyboardInterrupt:
         print("Stopping...")
     finally:
