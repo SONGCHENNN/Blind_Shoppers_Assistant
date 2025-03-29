@@ -14,6 +14,8 @@ from gtts import gTTS
 from pydub import AudioSegment
 from pydub.playback import play
 
+from p_ocr import LiveOCRDetector
+
 # Flask server URL
 flask_server_url = "http://<laptop_ip>:5000/upload_video"
 
@@ -46,6 +48,8 @@ stop_audio_thread = False
 last_announced_objects = set()  # Keep track of previously announced objects
 announcement_cooldown = 5  # Seconds between announcing the same object again
 
+ocr_detector = LiveOCRDetector(audio_queue)
+
 # MQTT topic
 mqtt_topic = "fall_detection/status"
 
@@ -54,7 +58,7 @@ mqtt_topic = "fall_detection/status"
 def on_message(client, userdata, message):
     if message.topic == mqtt_topic:
         msg = message.payload.decode()
-        if "FALL DETECTED" in msg:
+        if "Fall detected" in msg:
             add_to_audio_queue("Someone fell down please go to help them", priority=1)
 
 
@@ -122,7 +126,7 @@ def start_recording():
 
     # Initialize YOLO detector if not already done
     if yolo_detector is None:
-        yolo_detector = yolo_detect.YOLODetector(model_path="/home/qunzhen/try/models/best.pt")
+        yolo_detector = yolo_detect.YOLODetector(model_path="/home/qunzhen/try/models/best_packages.pt")
 
     # Start audio queue processor if not already running
     if audio_thread is None or not audio_thread.is_alive():
@@ -169,7 +173,7 @@ def start_recording():
 
 def announce_yolo_detections():
     """Thread function to announce YOLO detections"""
-    global is_recording, yolo_detector
+    global is_recording, yolo_detector, ocr_detector
 
     last_announced_classes = {}  # Track last announced object classes
 
@@ -188,13 +192,17 @@ def announce_yolo_detections():
                 # Check if this is a new object class or if the last announcement was more than cooldown ago
                 if (obj_class not in last_announced_classes or
                         (current_time - last_announced_classes[obj_class]['time'] > announcement_cooldown)):
-                    if count == 1:
-                        message = f"Detected 1 {obj_class}"
-                    else:
+                    if count != 0:
                         message = f"Detected {count} {obj_class}s"
-
-                    # Add to audio queue with priority
-                    add_to_audio_queue(message, priority=3)
+                        if obj_class == 'packages':
+                            print("hi")
+                            # ocr_detector.trigger_ocr_detection()
+                            current_frame = yolo_detector.get_latest_frame()
+                            if current_frame is not None:
+                                # Process the frame with OCR
+                                ocr_detector.trigger_ocr_detection(frame=current_frame)
+                        else:
+                            add_to_audio_queue(message, priority=3)
 
                     # Update last announced info
                     last_announced_classes[obj_class] = {
@@ -381,11 +389,11 @@ def listen_for_commands():
 
 
 # MQTT setup to listen for fall detection alerts
-mqtt_broker = ""  # Changed from empty string
+mqtt_broker = "<pi_ip>"  # Changed from empty string
 mqtt_port = 1883
 mqtt_client = mqtt.Client()
 try:
-    mqtt_client.connect("", mqtt_port, 60)
+    mqtt_client.connect("<pi_ip>", mqtt_port, 60)
     mqtt_client.subscribe(mqtt_topic)
     mqtt_client.on_message = on_message
 except Exception as e:
