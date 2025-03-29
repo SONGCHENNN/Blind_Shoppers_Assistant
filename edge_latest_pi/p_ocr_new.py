@@ -35,6 +35,14 @@ class LiveOCRDetector:
         self.detection_start_time = None
         self.detection_duration = 20  # 20 seconds of detection
 
+        # Frame processing rate - process every 20th frame
+        self.frame_counter = 0
+        self.process_frame_rate = 20
+
+        # Keep track of detected brands and dates to avoid repetition
+        self.detected_brands = set()
+        self.detected_dates = set()
+
     def keyword_based_text_extraction(self, text):
         """
         Extract full text segments containing context keywords
@@ -132,25 +140,102 @@ class LiveOCRDetector:
 
         # If meaningful text is detected, add to audio queue
         if extracted_text and detected_dates:
-            full_text = f"Package detected. Brand: {extracted_text}. Dates: {', '.join(detected_dates)}"
-            print(f"OCR Detection Result: {full_text}")  # Debug print
+            # Add new brands and dates to our tracking sets
+            is_new_brand = extracted_text not in self.detected_brands
+            new_dates = [date for date in detected_dates if date not in self.detected_dates]
 
-            # Put text in audio queue if available
-            if self.audio_queue:
-                self.audio_queue.put((3, time.time(), full_text))
+            if is_new_brand or new_dates:
+                self.detected_brands.add(extracted_text)
+                self.detected_dates.update(detected_dates)
+
+                full_text = f"Package detected. Brand: {extracted_text}. Dates: {', '.join(detected_dates)}"
+                print(f"OCR Detection Result: {full_text}")  # Debug print
+
+                # Put text in audio queue if available
+                if self.audio_queue:
+                    self.audio_queue.put((3, time.time(), full_text))
 
         return extracted_text, detected_dates
 
-    def trigger_ocr_detection(self, frame):
+    def start_continuous_detection(self, frame_provider):
         """
-        Threaded method to start OCR detection on a provided frame
+        Start continuous OCR detection for a certain duration
 
-        :param frame: Frame to process for OCR
+        :param frame_provider: Function that returns the current frame when called
         """
-        print("Trigger OCR detection called with frame")  # Debug print
+        if self.is_detecting:
+            print("OCR detection already in progress")
+            return
 
-        if frame is not None:
-            print("Processing provided frame")
+        self.is_detecting = True
+        self.detection_start_time = time.time()
+        self.frame_counter = 0
+        self.detected_brands = set()
+        self.detected_dates = set()
+
+        print(f"Starting continuous OCR detection for {self.detection_duration} seconds")
+        detection_thread = threading.Thread(target=lambda: self._continuous_detection_loop(frame_provider))
+        detection_thread.daemon = True
+        detection_thread.start()
+
+    def _continuous_detection_loop(self, frame_provider):
+        """
+        Continuously process frames for OCR for the specified duration
+
+        :param frame_provider: Function that returns the current frame when called
+        """
+        try:
+            while self.is_detecting:
+                # Check if we've reached the time limit
+                current_time = time.time()
+                elapsed_time = current_time - self.detection_start_time
+
+                if elapsed_time >= self.detection_duration:
+                    print(f"OCR detection completed after {elapsed_time:.2f} seconds")
+                    self.is_detecting = False
+                    break
+
+                # Get the current frame from the provider function
+                frame = frame_provider()
+                if frame is None:
+                    print("No frame available for OCR processing")
+                    time.sleep(0.1)
+                    continue
+
+                # Increment frame counter
+                self.frame_counter += 1
+
+                # Only process every Nth frame to save resources
+                if self.frame_counter % self.process_frame_rate == 0:
+                    print(f"Processing frame {self.frame_counter} (elapsed time: {elapsed_time:.2f}s)")
+                    self.process_single_frame(frame)
+
+                # Small delay to prevent CPU overuse
+                time.sleep(0.01)
+
+        except Exception as e:
+            print(f"Error in continuous OCR detection: {e}")
+        finally:
+            self.is_detecting = False
+            print("OCR detection stopped")
+
+    def trigger_ocr_detection(self, frame=None, frame_provider=None):
+        """
+        Trigger OCR detection - either process a single frame or start continuous detection
+
+        :param frame: Single frame to process (for backward compatibility)
+        :param frame_provider: Function to get frames for continuous detection
+        """
+        print("Trigger OCR detection called")  # Debug print
+
+        if frame_provider:
+            # Start continuous detection
+            self.start_continuous_detection(frame_provider)
+        elif frame is not None:
+            # Process just a single frame (old behavior)
+            print("Processing provided single frame")
             detection_thread = threading.Thread(target=lambda: self.process_single_frame(frame))
             detection_thread.daemon = True
             detection_thread.start()
+        else:
+            print("Error: No frame or frame provider specified for OCR detection")

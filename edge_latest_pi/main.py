@@ -14,7 +14,7 @@ from gtts import gTTS
 from pydub import AudioSegment
 from pydub.playback import play
 
-from p_ocr import LiveOCRDetector
+from p_ocr_new import LiveOCRDetector
 
 # Flask server URL
 flask_server_url = "http://<laptop_ip>:5000/upload_video"
@@ -176,6 +176,8 @@ def announce_yolo_detections():
     global is_recording, yolo_detector, ocr_detector
 
     last_announced_classes = {}  # Track last announced object classes
+    package_ocr_last_triggered = 0  # Timestamp when OCR was last triggered for packages
+    package_ocr_cooldown = 25  # Seconds to wait before triggering OCR again (20s process + 5s buffer)
 
     while is_recording:
         if yolo_detector is None:
@@ -195,12 +197,21 @@ def announce_yolo_detections():
                     if count != 0:
                         message = f"Detected {count} {obj_class}s"
                         if obj_class == 'packages':
-                            print("hi")
-                            # ocr_detector.trigger_ocr_detection()
-                            current_frame = yolo_detector.get_latest_frame()
-                            if current_frame is not None:
-                                # Process the frame with OCR
-                                ocr_detector.trigger_ocr_detection(frame=current_frame)
+                            # Check if OCR cooldown has passed
+                            if current_time - package_ocr_last_triggered > package_ocr_cooldown:
+                                print("Package detected - starting OCR detection")
+
+                                # Define a frame provider function that gets the latest frame from YOLO
+                                def get_latest_frame():
+                                    return yolo_detector.get_latest_frame()
+
+                                # Start OCR detection with the frame provider
+                                ocr_detector.trigger_ocr_detection(frame_provider=get_latest_frame)
+                                package_ocr_last_triggered = current_time
+
+                                # Add message to audio queue
+                                add_to_audio_queue(message, priority=3)
+                                add_to_audio_queue("Scanning package for information", priority=3)
                         else:
                             add_to_audio_queue(message, priority=3)
 
@@ -389,11 +400,11 @@ def listen_for_commands():
 
 
 # MQTT setup to listen for fall detection alerts
-mqtt_broker = "<pi_ip>"  # Changed from empty string
+mqtt_broker = "<raspberry_pi_ip>"  # Changed from empty string
 mqtt_port = 1883
 mqtt_client = mqtt.Client()
 try:
-    mqtt_client.connect("<pi_ip>", mqtt_port, 60)
+    mqtt_client.connect("<raspberry_pi_ip>", mqtt_port, 60)
     mqtt_client.subscribe(mqtt_topic)
     mqtt_client.on_message = on_message
 except Exception as e:
