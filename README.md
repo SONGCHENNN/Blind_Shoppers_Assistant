@@ -26,3 +26,7 @@ The folders are separated into edge_pi which are codes that are used in raspberr
 
    
 5. Software components and justification
+6.Step-by-Step Guide in running Flask dashboard interface
+```
+git clone 
+```
