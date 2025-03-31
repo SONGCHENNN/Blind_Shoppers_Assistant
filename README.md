@@ -270,6 +270,7 @@ For continuous detection, a frame provider function is defined that returns the 
 ### Experiments
 
 ![Quantized ONNX model](/resources/experiment1.png)
+
 Objectness and class logits needed sigmoid activation when calling predictions from the quantized ONNX model.
 After applying sigmoid manually, we observed that the model still produced low-confidence (everything is around 0.2500xxx), dense, and inaccurate predictions — with bounding boxes all over the places.
 This indicated that the model is likely broken during the ONNX conversion process.
@@ -299,7 +300,8 @@ venv\Scripts\activate
 ```
 pip install -r requirements.txt
 ```
-
+Change this line to your raspberry pi broker IP address
+![http_setup](/resources/image2.jpg)
 ```
 python3 app.py
 ```
@@ -344,6 +346,13 @@ sudo systemctl enable mosquitto
 ```
 After all the libraries are installed and mosquitto is set up.
 Remember to change the code in main.py to your credential: <laptop_ip> to your laptop ip address. This is used to send video file to the dashboard interface running on your laptop IP address. <raspberry_pi_ip> refers to MQTT broker ip address of your raspberry pi to establish a connection to MQTT. 
+Change this line to your laptop ip address
+
+![http_setup](/resources/image1.jpg)
+
+Change this line to your raspberry pi broker IP address
+
+![http_setup](/resources/image2.jpg)
 
 To run the main code(the program will be started after this python file is called): 
 ```
