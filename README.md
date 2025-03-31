@@ -8,28 +8,28 @@ The folders are separated into edge_pi which are codes that are used in raspberr
    
 | Hardware           | Justifications|
 | ---- | ---- |
-| Ultrasonic sensor  | Content Cell  |
-| Accelerometer      | Content Cell  | 
-| Speaker            | Content Cell  | 
-| Webcam and mic     | Content Cell  | 
+| Ultrasonic sensor  | Enables real-time obstacle detection for safe movement  |
+| Accelerometer      | Detects falls through motion pattern analysis and send alert to dashboard. | 
+| Speaker            | Speak out necessary notification such as objects detected and action required.   | 
+| Webcam and mic     | Carry out speech recognition, products detection and text reading.  | 
 
 
 2. AI Models and justifications
    
 | AI Models | Justifications|
 | ------------- | ------------- |
-| YOLO | Content Cell  |
-| PaddleOCR | Content Cell  | 
+| YOLO | Lightweight object detection model used to classify and identify the grocery products in the supermarket. |
+| PaddleOCR | Retrieves text information such as expiry date and brand. | 
 
 4. Communication Protocol and Justification
    
 | Communication Protocol | Justifications|
 | ------------- | ------------- |
-| MQTT  | Content Cell  |
-| HTTP  | Content Cell  | 
+| MQTT  | Transmit data for fall detection message and obstacle detection sensor reading. |
+| HTTP  | Upload recorded video toflask server. | 
+| SMTP | Send email alert to family members in the event the fall is detected  | 
 
    
-5. Software components and justification
 
 
 ## System Architecture
@@ -255,9 +255,6 @@ The detector integrates with the system's audio feedback mechanism:
 
 ### Usage Examples
 
-#### Basic Usage
-
-The detector can be used to process a single frame by creating a detector with an audio queue and passing a camera frame to the process_single_frame method.
 
 #### Continuous Detection
 
@@ -314,6 +311,13 @@ sudo apt install python3-venv
 python3 -m venv bsaproject
 source bsaproject/bin/activate
 ```
+```
+git clone https://github.com/SONGCHENNN/Blind_Shoppers_Assistant.git
+```
+
+```
+cd edge_dashboard
+```
 Install library for the audio for mic 
 ```
 sudo apt install portaudio19-dev
@@ -343,7 +347,7 @@ Remember to change the code in main.py to your credential: <laptop_ip> to your l
 
 To run the main code(the program will be started after this python file is called): 
 ```
-python3 main.py
+python3 main_final.py
 ```
 
 
