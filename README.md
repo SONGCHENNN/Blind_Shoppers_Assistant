@@ -3,7 +3,7 @@
 
 The Blind Shopper Assistance System is an innovative assistive technology designed to help visually impaired individuals navigate shopping environments. The system integrates multiple sensors and detection systems to provide real-time audio feedback about the environment, obstacles, packages, and potential hazards.
 
-The folders are separated into edge_pi which are codes that are used in raspberry pi and dashboard which is implemented using the Flask framework. For raspberry pi main.py is the main code that is needed to run the program, the rest of the python files will be imported to the main python file. 
+The folders are separated into edge_latest_pi which are codes that are used in raspberry pi and dashboard which is implemented using the Flask framework. For raspberry pi main_final.py is the main code that is needed to run the program, the rest of the python files will be imported to the main python file.  Dashboard code is run using app.py
 1. Hardware components and justifications
    
 | Hardware           | Justifications|
